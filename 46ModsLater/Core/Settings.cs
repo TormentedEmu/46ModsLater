@@ -134,6 +134,12 @@ namespace FortySixModsLater
 
         private void FindManagedFolder()
         {
+            if (!Directory.Exists(GamePath))
+            {
+                GameManagedPath = "";
+                return;
+            }
+
             string dataFolder = Directory.GetDirectories(_settingsData.GamePath).FirstOrDefault(dir => dir.EndsWith("_Data"), null);
             if (dataFolder == null)
             {
