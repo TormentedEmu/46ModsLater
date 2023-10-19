@@ -27,7 +27,7 @@ namespace FortySixModsLater
             GameTitle = Path.GetFileName(gamePath);
             _log.Info($"Attempting to patch game: {GameTitle}");
 
-            if (string.IsNullOrEmpty(GameManagedPath) || !FindManagedFolder(gamePath))
+            if (!FindManagedFolder(gamePath))
             {
                 _log.Error($"Failed to find Data/Managed folder within: {gamePath}");
                 return;
