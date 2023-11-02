@@ -8,7 +8,7 @@ using System.Reflection;
 
 namespace FortySixModsLater
 {
-    internal class RoslynCompiler
+    public class RoslynCompiler
     {
         private static Logger _log = LogManager.GetCurrentClassLogger();
 
@@ -17,7 +17,6 @@ namespace FortySixModsLater
 
         public RoslynCompiler()
         {
-            AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
         }
 
         public void Init(string gameManagedPath, List<string> resolveDirs)
@@ -26,12 +25,14 @@ namespace FortySixModsLater
             CompileOptions = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary).WithOptimizationLevel(OptimizationLevel.Release).WithAllowUnsafe(true);
         }
 
-
-        public void Patch(string assemblyName, string gameManagedPath, List<string> patchDirs, List<string> resolveDirs)
+        public void Patch(string assemblyName, string gameManagedPath, ModuleDefinition gameModuleDef, List<string> patchDirs, List<string> resolveDirs)
         {
+            _log.Info("Beginning PatchScripts patch");
+
             Init(gameManagedPath, resolveDirs);
 
             bool success = false;
+
             try
             {
                 var trees = new List<SyntaxTree>();
@@ -40,7 +41,7 @@ namespace FortySixModsLater
                 {
                     List<string> patchScripts = null;
 
-                    if (!ModsManager.GetAllCSFiles(folder, out patchScripts))
+                    if (!Utils.GetAllCSFiles(folder, out patchScripts))
                         continue;
 
                     foreach (var patch in patchScripts)
@@ -54,7 +55,7 @@ namespace FortySixModsLater
 
                 List<MetadataReference> mdRefs = new List<MetadataReference>();
                 // for the initial patch scripts, we want to skip adding Burst.Cecil because it conflicts with Mono.Cecil
-                var dlls = Directory.GetFiles(GameManagedPath, "*.dll").Where(dll => dll.Contains("Unity.Burst.Cecil") == false && dll.Contains("Assembly-CSharp.dll") == false);
+                var dlls = Directory.GetFiles(GameManagedPath, "*.dll").Where(dll => dll.Contains("Unity.Burst.Cecil") == false && dll.Contains("Assembly-CSharp.dll") == false && dll.Contains("ModManagerEx.dll") == false);
 
                 foreach (var dll in dlls)
                 {
@@ -63,8 +64,11 @@ namespace FortySixModsLater
                 }
 
                 mdRefs.Add(AssemblyMetadata.CreateFromFile(Application.StartupPath + "46ModsLater.dll").GetReference());
+                byte[] patchedDllBytes = File.ReadAllBytes(Path.Combine(Application.StartupPath, "Temp", "Patched-Assembly-CSharp.dll"));
+                mdRefs.Add(AssemblyMetadata.CreateFromImage(patchedDllBytes).GetReference());
 
-                var compilation = CSharpCompilation.Create("PatcherScripts", trees, mdRefs, CompileOptions);
+                _log.Info("Compiling PatchScripts.dll");
+                var compilation = CSharpCompilation.Create("PatchScripts", trees, mdRefs, CompileOptions);
 
                 byte[] patchBytes = Array.Empty<byte>();
                 EmitResult resultStream = null;
@@ -79,60 +83,55 @@ namespace FortySixModsLater
                     }
                 }
 
-                if (resultStream == null)
+                if (resultStream == null || patchBytes == null || patchBytes.Length == 0)
                 {
                     throw new Exception("Failed to compile the PatchScripts.");
-                }
-
-                if (patchBytes == null || patchBytes.Length == 0)
-                {
-                    throw new Exception("Failed to convert the PatchScripts into a byte array.");
-                }
-
-                // Load the resulting assembly into this domain. 
-                Assembly psAssembly = Assembly.Load(patchBytes);
-
-                if (resultStream.Success)
-                {
-                    _log.Info("Success building PatchScripts.dll");
-                    success = true;
                 }
 
                 foreach (var d in resultStream.Diagnostics)
                 {
                     if (d.Severity == DiagnosticSeverity.Error)
                     {
-                        _log.Error(d.ToString());
+                        _log.Error($"ERROR: {d}");
                     }
                     else
                     {
                         if (d.DefaultSeverity == DiagnosticSeverity.Warning && d.ToString().Contains("Assuming assembly reference 'mscorlib"))
                             continue;
 
-                        _log.Info(d.ToString());
+                        _log.Info($"Warning: {d}");
                     }
                 }
 
-                // load temp assembly
-                string outPatchedAssembly = Path.Combine(Application.StartupPath, "Temp", "Assembly-CSharp.dll");
-                ModuleDefinition gameModule = ReadModuleDefinition(outPatchedAssembly);
+                if (!resultStream.Success)
+                {
+                    throw new Exception("Failed to build PatchScripts.dll due to compiler errors.");
+                }
+
+                // Load the resulting assembly into this domain. 
+                Assembly psAssembly = Assembly.Load(patchBytes);
                 var iPatchType = typeof(IPatcherMod);
                 var exportedTypes = psAssembly.ExportedTypes;
                 var iPatchTypes = exportedTypes.Where(t => iPatchType.IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
 
-                foreach (var i in iPatchTypes)
+                using (var psModule = Utils.ReadModuleDefinition(patchBytes, GameManagedPath))
                 {
-                    IPatcherMod mod = Activator.CreateInstance(i) as IPatcherMod;
-                    if (mod != null)
+                    foreach (var i in iPatchTypes)
                     {
-                        _log.Info($"Patching game module with mod: {mod}");
-                        mod.Patch(gameModule);
+                        IPatcherMod mod = Activator.CreateInstance(i) as IPatcherMod;
+                        if (mod != null)
+                        {
+                            _log.Info($"Patching game module with mod: {mod}");
+                            mod.Patch(gameModuleDef);
+                            mod.Link(gameModuleDef, psModule);
+                        }
                     }
                 }
 
                 // write patched assembly to game managed folder
-                string patchedOutput = Path.Combine(GameManagedPath, "Assembly-CSharp.dll");
-                gameModule.Write(patchedOutput);
+                string modPatchedPath = Path.Combine(Application.StartupPath, "Temp", "Patched-Assembly-CSharp.dll");
+                gameModuleDef.Write(modPatchedPath);
+                success = true;
             }
             catch (Exception ex)
             {
@@ -145,8 +144,10 @@ namespace FortySixModsLater
             }
         }
 
-        public void Create(string assemblyName, string gameManagedPath, string modPath, List<string> resolveDirs, List<string> modDirs)
+        public void Create(string assemblyName, string gameManagedPath, ModuleDefinition gameModuleDef, string modPath, List<string> resolveDirs, List<string> modDirs)
         {
+            _log.Info("Create Harmony mods start");
+
             Init(gameManagedPath, resolveDirs);
 
             bool success = false;
@@ -162,7 +163,7 @@ namespace FortySixModsLater
                     {
                         List<string> scripts = null;
 
-                        if (!ModsManager.GetAllCSFiles(folder, out scripts))
+                        if (!Utils.GetAllCSFiles(folder, out scripts))
                             continue;
 
                         foreach (var script in scripts)
@@ -176,13 +177,16 @@ namespace FortySixModsLater
                 }
 
                 List<MetadataReference> mdRefs = new List<MetadataReference>();
-                var dlls = Directory.GetFiles(GameManagedPath, "*.dll").Where(dll => dll.Contains("Unity.Burst.Cecil") == false);
+                var dlls = Directory.GetFiles(GameManagedPath, "*.dll").Where(dll => dll.Contains("Unity.Burst.Cecil") == false && dll.Contains("Assembly-CSharp.dll") == false && dll.Contains("ModManagerEx.dll") == false);
 
                 foreach (var dll in dlls)
                 {
                     MetadataReference mdRef = AssemblyMetadata.CreateFromFile(dll).GetReference();
                     mdRefs.Add(mdRef);
                 }
+
+                byte[] patchedDllBytes = File.ReadAllBytes(Path.Combine(Application.StartupPath, "Temp", "Patched-Assembly-CSharp.dll"));
+                mdRefs.Add(AssemblyMetadata.CreateFromImage(patchedDllBytes).GetReference());
 
                 var compilation = CSharpCompilation.Create(assemblyName, trees, mdRefs, CompileOptions);
                 string outHarmonyPath = Path.Combine(modPath, assemblyName + ".dll");
@@ -193,25 +197,27 @@ namespace FortySixModsLater
                     throw new Exception($"Failed to compile the Harmony Mod: {assemblyName}");
                 }
 
-                if (emitResult.Success)
-                {
-                    success = true;
-                }
-
                 foreach (var d in emitResult.Diagnostics)
                 {
                     if (d.Severity == DiagnosticSeverity.Error)
                     {
-                        _log.Error(d.ToString());
+                        _log.Error($"ERROR: {d}");
                     }
                     else
                     {
                         if (d.DefaultSeverity == DiagnosticSeverity.Warning && d.ToString().Contains("Assuming assembly reference 'mscorlib"))
                             continue;
 
-                        _log.Info(d.ToString());
+                        _log.Info($"Warning: {d}");
                     }
                 }
+
+                if (!emitResult.Success)
+                {
+                    throw new Exception($"Failed to compile {assemblyName}.dll due to compiler errors.");
+                }
+
+                success = true;
             }
             catch (Exception ex)
             {
@@ -221,33 +227,6 @@ namespace FortySixModsLater
             finally
             {
                 _log.Info($"Created Mod: {assemblyName}.dll successfully: {success}");
-            }
-        }
-
-        // Original code from DMT - Hal9000
-        private ModuleDefinition ReadModuleDefinition(string path)
-        {
-            var resolver = new DefaultAssemblyResolver();
-            resolver.AddSearchDirectory(GameManagedPath);
-
-            ModuleDefinition module = ModuleDefinition.ReadModule(path, new ReaderParameters(ReadingMode.Immediate) { AssemblyResolver = resolver, });
-            return module;
-        }
-        private Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
-        {
-            string filename = args.Name.Split(',')[0] + ".dll".ToLower();
-
-            var gameLocation = Path.GetDirectoryName(GameManagedPath);
-            string asmFile = Path.Combine(gameLocation,  filename);
-
-            try
-            {
-                return Assembly.LoadFrom(asmFile);
-            }
-            catch (Exception ex)
-            {
-                _log.Error($"AssemblyResolve caught exception: {ex}");
-                return null;
             }
         }
     }

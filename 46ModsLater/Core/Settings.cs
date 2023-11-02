@@ -53,7 +53,7 @@ namespace FortySixModsLater
             set => _settingsData.Mods = value;
         }
 
-        public string GameManagedPath { get => gameManagedPath; private set => gameManagedPath = value; }
+        public string GameManagedPath { get => gameManagedPath; set => gameManagedPath = value; }
 
 
         public bool this[string key]
@@ -111,7 +111,7 @@ namespace FortySixModsLater
                 _settingsData = new SettingsData();
             }
 
-            FindManagedFolder();
+            GameManagedPath = Utils.FindManagedFolder(GamePath);
             _log.Info("Current Settings:\n" + _settingsData.ToString());
         }
 
@@ -129,31 +129,6 @@ namespace FortySixModsLater
             catch (Exception ex)
             {
                 _log.Error(ex.ToString());
-            }
-        }
-
-        private void FindManagedFolder()
-        {
-            if (!Directory.Exists(GamePath))
-            {
-                GameManagedPath = "";
-                return;
-            }
-
-            string dataFolder = Directory.GetDirectories(_settingsData.GamePath).FirstOrDefault(dir => dir.EndsWith("_Data"), null);
-            if (dataFolder == null)
-            {
-                _log.Error("Did not find the _game_Data folder");
-                GameManagedPath = "";
-            }
-            else
-            {
-                string managedFolder = Path.Combine(dataFolder, "Managed");
-                if (Directory.Exists(managedFolder))
-                {
-                    GameManagedPath = managedFolder;
-                    _log.Info($"Managed directory found: {managedFolder}");
-                }
             }
         }
     }

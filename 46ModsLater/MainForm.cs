@@ -1,5 +1,4 @@
 using NLog;
-using NLog.Targets;
 using System.Diagnostics;
 
 namespace FortySixModsLater
@@ -45,15 +44,10 @@ namespace FortySixModsLater
 
         private void btnBuild_Click(object sender, EventArgs e)
         {
-            btnBuild.Enabled = false;
-            btnBuild.BackColor = Color.Red;
-            btnBuild.Text = "Building...";
-
             var listViewItems = listViewMods.CheckedItems;
 
             if (listViewItems != null || listViewItems.Count > 0)
             {
-                _log.Info($"Building {listViewItems.Count} selected Mods");
                 // gather mods to build
                 List<string> modsToBuild = new List<string>();
                 foreach (ListViewItem modItem in listViewItems)
@@ -61,7 +55,30 @@ namespace FortySixModsLater
                     if (modItem.Checked) { modsToBuild.Add(modItem.Text); }
                 }
 
+                if (modsToBuild.Count == 0)
+                {
+                    _log.Info("No mods currently selected to build.");
+                    return;
+                }
+
+                if (!Utils.CheckPath(_Settings.GamePath))
+                {
+                    _log.Error($"Game folder is invalid: {_Settings.GamePath}");
+                    return;
+                }
+
+                if (!Utils.CheckPath(_Settings.GameManagedPath))
+                {
+                    _log.Error($"Game Managed folder is invalid: {_Settings.GameManagedPath}");
+                    return;
+                }
+
+                btnBuild.Enabled = false;
+                btnBuild.BackColor = Color.Red;
+                btnBuild.Text = "Building...";
+                _log.Info($"Building {listViewItems.Count} selected Mods");
                 var uiScheduler = TaskScheduler.FromCurrentSynchronizationContext();
+
                 Task.Factory.StartNew(() => PatchCompile(modsToBuild)).ContinueWith(code =>
                 {
                     btnBuild.Enabled = true;
@@ -71,7 +88,7 @@ namespace FortySixModsLater
             }
             else
             {
-                _log.Info($"No mods selected to build: {listViewItems}");
+                _log.Info($"The Mods list is currently empty: {listViewItems}");
             }
         }
 
@@ -89,8 +106,6 @@ namespace FortySixModsLater
         private void btnRefreshMods_Click(object sender, EventArgs e)
         {
             btnRefreshMods.Enabled = false;
-            _log.Info("Refreshing the Mods list.");
-
             RefreshModsList();
             btnRefreshMods.Enabled = true;
         }
@@ -102,6 +117,8 @@ namespace FortySixModsLater
             {
                 rtbGameFolder.Text = folderBrowserDialogGameFolder.SelectedPath;
                 _Settings.GamePath = folderBrowserDialogGameFolder.SelectedPath;
+                _Settings.GameManagedPath = Utils.FindManagedFolder(_Settings.GamePath);
+
                 _log.Info($"Setting the Game folder to: {folderBrowserDialogGameFolder.SelectedPath}");
             }
         }
@@ -116,20 +133,26 @@ namespace FortySixModsLater
         {
             string modsFolder = _Settings.ModsPath;
 
-            if (Directory.Exists(modsFolder))
+            if (!Utils.CheckPath(modsFolder))
             {
-                Process.Start("explorer.exe", modsFolder);
+                _log.Error($"Mods folder is invalid: '{modsFolder}'.");
+                return;
             }
+
+            Process.Start("explorer.exe", modsFolder);
         }
 
         private void btnOpenGameFolder_Click(object sender, EventArgs e)
         {
             string gameFolder = _Settings.GamePath;
 
-            if (Directory.Exists(gameFolder))
+            if (!Utils.CheckPath(gameFolder))
             {
-                Process.Start("explorer.exe", gameFolder);
+                _log.Error($"Game folder is invalid: '{gameFolder}'.");
+                return;
             }
+
+            Process.Start("explorer.exe", gameFolder);
         }
 
         private void RefreshModsList()
@@ -137,9 +160,9 @@ namespace FortySixModsLater
             _log.Info("Refreshing the Mods List");
             listViewMods.Items.Clear();
 
-            if (!Directory.Exists(_Settings.ModsPath))
+            if (!Utils.CheckPath(_Settings.ModsPath))
             {
-                _log.Info($"Invalid directory: {_Settings.ModsPath}");
+                _log.Info($"Mods folder is invalid: '{_Settings.ModsPath}'");
                 return;
             }
 
@@ -177,23 +200,25 @@ namespace FortySixModsLater
             // initial patch assembly
             Stopwatch sw = Stopwatch.StartNew();
 
-            // patch our game with an earlier mod loader
+            // patch our game with an earlier mod loader - ModManagerEX
             _AssemblyPatcher.Patch(_Settings.GamePath);
 
             _log.Info($"Including {modsToBuild.Count} in build.");
 
             // compile patch scripts, run patchers
             _ModsManager.GameManagedPath = _AssemblyPatcher.GameManagedPath;
-            _ModsManager.RunPatchScripts(modsToBuild);
+            _ModsManager.RunPatchScripts(modsToBuild, _AssemblyPatcher.GameMainModule);
 
             // compile mod scripts
-            _ModsManager.CompileHarmonyMods(modsToBuild);
+            _ModsManager.CompileHarmonyMods(modsToBuild, _AssemblyPatcher.GameMainModule);
 
             // copy mod folders to game directory
             _ModsManager.CopyModsToGame(modsToBuild, _Settings.GamePath);
 
+            _AssemblyPatcher.WriteFinalOutput();
+
             sw.Stop();
-            _log.Info($"Build process completed in {sw.Elapsed.Milliseconds}ms");
+            _log.Info($"Build process completed in {sw.ElapsedMilliseconds}ms \n********************************************************************************\n");
         }
 
         private void listViewMods_ItemChecked(object sender, ItemCheckedEventArgs e)

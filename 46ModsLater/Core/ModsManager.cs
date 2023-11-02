@@ -1,5 +1,5 @@
 ﻿using NLog;
-using System.IO;
+using Mono.Cecil;
 
 namespace FortySixModsLater
 {
@@ -10,7 +10,7 @@ namespace FortySixModsLater
         private RoslynCompiler Rosy;
 
         public string ModsPath { get; set; } = string.Empty;
-        public string GameManagedPath {  get; set; } = string.Empty;
+        public string GameManagedPath { get; set; } = string.Empty;
 
         public Dictionary<string, ModInfo> Mods { get; set; } = new Dictionary<string, ModInfo>();
 
@@ -22,38 +22,35 @@ namespace FortySixModsLater
             Init();
         }
 
-        public bool Init()
+        public void Init()
         {
-            if (string.IsNullOrEmpty(ModsPath) || !Directory.Exists(ModsPath))
+            if (CheckModsPath())
             {
-                _log.Error($"ModsPath is null or directory doesn't exist: '{ModsPath}'");
-                return false;
-            }
-
-            var folders = Directory.GetDirectories(ModsPath);
-            foreach (var folder in folders)
-            {
-                var modInfoXml = Path.Combine(folder, "ModInfo.xml");
-
-                if (!File.Exists(modInfoXml))
-                    continue;
-
-                ModInfo modInfo = new ModInfo(modInfoXml);
-                if (!Mods.ContainsKey(modInfo.Name))
+                var folders = Directory.GetDirectories(ModsPath);
+                foreach (var folder in folders)
                 {
-                    if (!Mods.TryAdd(modInfo.Name, modInfo))
+                    var modInfoXml = Path.Combine(folder, "ModInfo.xml");
+
+                    if (!File.Exists(modInfoXml))
+                        continue;
+
+                    ModInfo modInfo = new ModInfo(modInfoXml);
+                    if (!Mods.ContainsKey(modInfo.Name))
                     {
-                        _log.Error($"Failed to add mod: {modInfo.Name}");
+                        if (!Mods.TryAdd(modInfo.Name, modInfo))
+                        {
+                            _log.Error($"Failed to add mod: {modInfo.Name}");
+                        }
                     }
                 }
+
+                _log.Info($"Found Mod folders: {Mods.Count}");
             }
 
-            _log.Info($"Found {Mods.Count} Mods");
-
-            return true;
+            CheckGamePath();
         }
 
-        public void RunPatchScripts(List<string> modsToInclude)
+        public void RunPatchScripts(List<string> modsToInclude, ModuleDefinition gameModDef)
         {
             List<string> psMods = new List<string>();
 
@@ -74,11 +71,11 @@ namespace FortySixModsLater
 
             if (psMods.Count > 0)
             {
-                Rosy.Patch("PatchScripts", GameManagedPath, psMods, psMods);
+                Rosy.Patch("PatchScripts", GameManagedPath, gameModDef, psMods, psMods);
             }
         }
 
-        public void CompileHarmonyMods(List<string> modsToInclude)
+        public void CompileHarmonyMods(List<string> modsToInclude, ModuleDefinition gameModDef)
         {
             foreach (var mod in modsToInclude)
             {
@@ -108,7 +105,7 @@ namespace FortySixModsLater
 
                     if (scriptDirs.Count > 0)
                     {
-                        Rosy.Create(modInfo.Name, GameManagedPath, path, scriptDirs, scriptDirs);
+                        Rosy.Create(modInfo.Name, GameManagedPath, gameModDef, path, scriptDirs, scriptDirs);
                     }
                 }
             }
@@ -116,7 +113,7 @@ namespace FortySixModsLater
 
         public void CopyModsToGame(List<string> modsToBuild, string gamePath)
         {
-            foreach(var mod in modsToBuild)
+            foreach (var mod in modsToBuild)
             {
                 try
                 {
@@ -125,7 +122,7 @@ namespace FortySixModsLater
                     Directory.CreateDirectory(destDir);
                     destDir = Path.Combine(destDir, Mods[mod].Name);
                     Directory.CreateDirectory(destDir);
-                    CopyDirectory(sourceDir, destDir, true);
+                    Utils.CopyDirectory(sourceDir, destDir, true);
                 }
                 catch (Exception ex)
                 {
@@ -135,74 +132,27 @@ namespace FortySixModsLater
 
             _log.Info("Copy mod folders completed.");
         }
-         
-        public static void CopyDirectory(string sourceDir, string destinationDir, bool recursive)
+
+        public bool CheckModsPath()
         {
-            if (!Directory.Exists(sourceDir))
-                return;
-
-            try
+            if (!Utils.CheckPath(ModsPath))
             {
-                var dir = new DirectoryInfo(sourceDir);
-                DirectoryInfo[] dirs = dir.GetDirectories();
-                Directory.CreateDirectory(destinationDir);
-
-                foreach (FileInfo file in dir.GetFiles())
-                {
-                    string targetFilePath = Path.Combine(destinationDir, file.Name);
-                    file.CopyTo(targetFilePath, true);
-                }
-
-                if (recursive)
-                {
-                    foreach (DirectoryInfo subDir in dirs)
-                    {
-                        string newDestinationDir = Path.Combine(destinationDir, subDir.Name);
-                        CopyDirectory(subDir.FullName, newDestinationDir, true);
-                    }
-                }
+                _log.Error($"ModsPath is null or directory doesn't exist: '{ModsPath}'");
+                return false;
             }
-            catch (Exception ex)
-            {
-                _log.Error($"CopyDirectory - Caught exception: {ex}");
-            }
+
+            return true;
         }
 
-        public static bool GetAllCSFiles(string path, out List<string> csFiles)
+        public bool CheckGamePath()
         {
-            csFiles = new List<string>();
-
-            if (!Directory.Exists(path))
+            if (!Utils.CheckPath(GameManagedPath))
+            {
+                _log.Error($"GameManagedPath is null or directory doesn't exist: '{GameManagedPath}'");
                 return false;
-
-            Queue<string> queue = new Queue<string>();
-            queue.Enqueue(path);
-            bool success = true;
-
-            try
-            {
-                while (queue.Count > 0)
-                {
-                    path = queue.Dequeue();
-
-                    foreach (string subDir in Directory.GetDirectories(path))
-                    {
-                        queue.Enqueue(subDir);
-                    }
-
-                    string[] files = Directory.GetFiles(path, "*.cs");
-
-                    if (files != null && files.Length > 0)
-                        csFiles.AddRange(files);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.Error($"GetAllCSFiles - Caught exception: {ex}");
-                success = false;
             }
 
-            return success;
+            return true;
         }
     }
 }

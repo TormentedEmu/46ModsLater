@@ -13,6 +13,7 @@ namespace FortySixModsLater
             Author = "TotallyRadAuthor",
             Website = "https://www.google.com",
             IsEnabled = true,
+            IsEarlyLoad = false,
         };
 
         public string ModPath { get; set; }
@@ -23,7 +24,7 @@ namespace FortySixModsLater
         public string Author { get; set; }
         public string Website { get; set; }
         public bool IsEnabled { get; set; } = true;
-
+        public bool IsEarlyLoad { get; set; } = false;
 
         public ModInfo()
         {
@@ -55,6 +56,7 @@ namespace FortySixModsLater
             if (string.IsNullOrEmpty(Website)) Website = DefaultModInfo.Website;
 
             IsEnabled = bool.TryParse(GetElementAttribute(root, "IsEnabled"), out bool enabled) == true ? enabled : true;
+            IsEarlyLoad = bool.TryParse(GetElementAttribute(root, "IsEarlyLoad"), out bool isEarlyLoad) == true ? isEarlyLoad : false;
         }
 
         private string GetElementAttribute(XElement ele, string val)
