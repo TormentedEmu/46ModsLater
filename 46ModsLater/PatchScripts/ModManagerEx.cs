@@ -25,6 +25,17 @@ public static class ModManagerEx
         }
         else
         {
+            if (GameManager.Instance == null && GameManager.IsDedicatedServer && !EarlyModsLoaded)
+            {
+                // We technically could load early mods on a dedicated server but its not
+                // very useful as we're already in the SceneGame and awake has been called on most everything(it would be early by a fraction of a second)
+                // Our LoadMods is called twice due to the Platform not being init on a dedicated server
+                // where the SceneSplash isn't loaded
+                EarlyModsLoaded = true;
+                Log.Out("[ModManagerEX] Delaying mod loader for dedicated server.");
+                return;
+            }
+
             LoadNormalMods();
         }
 
